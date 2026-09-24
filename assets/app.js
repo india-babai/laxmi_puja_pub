@@ -151,6 +151,8 @@ const cacheKey = () => S.cfg ? `lp-cache-${S.cfg.mode}-${S.cfg.owner || ''}/${S.
 const yd = (y = S.year) => (S.data[y] && S.data[y].data) || blankYear(y);
 const latestYear = () => S.years.length ? Math.max(...S.years) : THIS_YEAR;
 
+const RO = () => !!(S.cfg && S.cfg.readonly);
+
 function setYear(y) { S.year = +y; LS.set('lp-year', S.year); }
 
 async function boot() {
@@ -190,6 +192,7 @@ async function refreshAll() {
 /* Apply a change to a year file and save it. On a conflict (the file changed on
  * another device), reload the latest copy and re-apply the change once. */
 async function mutate(year, change, message) {
+  if (RO()) throw new Error('This device has view-only access.');
   let rec = S.data[year];
   if (!rec) {
     try { rec = await S.store.load(year); } catch (e) { if (e.status !== 404) throw e; rec = { data: blankYear(year), sha: null }; }
@@ -265,6 +268,9 @@ window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); }
 function render() {
   const app = $('#app');
   const { path, params } = route();
+  if (path === 'join') return joinFromLink(params);
+  document.body.classList.toggle('readonly', RO());
+  if (RO() && path === 'add') { location.hash = '#/'; return; }
   // New entries always go into the latest (current) year.
   if (path === 'add' && !params.get('id') && S.years.length && S.year !== latestYear()) setYear(latestYear());
   $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === path));
@@ -298,10 +304,11 @@ function bindYearChips(root = document) {
 function entryRow(e) {
   const inn = e.type === 'collection';
   const meta = [e.category, e.mode, e.handledBy && (inn ? 'to ' : 'by ') + e.handledBy, fmtDate(e.date)].filter(Boolean).join(' · ');
-  return `<li><a class="entry" href="#/add?id=${encodeURIComponent(e.id)}">
+  const tag = RO() ? 'div' : 'a';
+  return `<li><${tag} class="entry"${RO() ? '' : ` href="#/add?id=${encodeURIComponent(e.id)}"`}>
     <span class="entry-ico ${inn ? 'in' : 'out'}" aria-hidden="true">${inn ? '↓' : '↑'}</span>
     <span class="entry-main"><span class="entry-name">${esc(e.name)}</span><span class="entry-meta">${esc(meta)}</span></span>
-    <span class="entry-amt num ${inn ? 'in' : 'out'}">${signed(e.amount, e.type)}</span></a></li>`;
+    <span class="entry-amt num ${inn ? 'in' : 'out'}">${signed(e.amount, e.type)}</span></${tag}></li>`;
 }
 const feet = '<div class="feet" aria-hidden="true"><i></i><i></i><i></i><i></i></div>';
 function bars(rows, total, cls = '') {
@@ -321,7 +328,7 @@ function viewHome() {
   // Contributors from the previous year who have not given yet this year.
   let pendingHtml = '';
   const prevYear = [...S.years].filter(y => y < S.year).pop();
-  if (prevYear && S.year === latestYear()) {
+  if (prevYear && S.year === latestYear() && !RO()) {
     const key = e => norm(e.name) + '|' + e.category;
     const have = new Set(col.map(key));
     const prev = new Map();
@@ -368,7 +375,7 @@ function viewHome() {
         <div><span class="lbl">Spent</span><span class="val num out">${money(t.x)}</span></div>
       </div>
     </section>
-    <div class="quick">
+    <div class="quick edit-only">
       <a class="btn btn-lg btn-in" href="#/add?type=collection">＋ Collection</a>
       <a class="btn btn-lg btn-out" href="#/add?type=expense">＋ Expense</a>
     </div>
@@ -378,10 +385,10 @@ function viewHome() {
       <section class="card"><div class="card-head"><h3>Collected by type</h3></div>${bars(byKey(col, 'category'), t.c)}</section>
     </div>
     <section class="card"><div class="card-head"><h3>Recent entries</h3><a href="#/ledger">See all →</a></div>
-      ${recent.length ? `<ul class="list">${recent.map(entryRow).join('')}</ul>` : `<div class="empty">${feet}No entries for ${S.year} yet.<br>Tap <b>＋</b> to log the first collection or expense.</div>`}
+      ${recent.length ? `<ul class="list">${recent.map(entryRow).join('')}</ul>` : `<div class="empty">${feet}No entries for ${S.year} yet.${RO() ? '' : '<br>Tap <b>＋</b> to log the first collection or expense.'}</div>`}
     </section>
     ${handHtml}
-    ${notes.length ? `<section class="card"><div class="card-head"><h3>Notes</h3><a href="#/settings">Edit</a></div><ul class="notes">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul></section>` : ''}
+    ${notes.length ? `<section class="card"><div class="card-head"><h3>Notes</h3><a href="#/settings" class="edit-only">Edit</a></div><ul class="notes">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul></section>` : ''}
   </div>`;
 }
 
@@ -521,7 +528,7 @@ function viewLedger() {
   const d = yd();
   const cats = [...new Set(d.entries.map(e => e.category).filter(Boolean))].sort();
   return `<div class="stack">
-    <div class="page-head"><h1>Ledger ${S.year}</h1><a class="btn btn-primary" href="#/add">＋ Add</a></div>
+    <div class="page-head"><h1>Ledger ${S.year}</h1><a class="btn btn-primary edit-only" href="#/add">＋ Add</a></div>
     ${yearChips()}
     <div class="card">
       <div class="filters" style="margin-bottom:12px">
@@ -744,12 +751,53 @@ function bindHistory() {
 }
 
 /* ---------------- Settings ---------------- */
+function viewSettingsReadonly() {
+  return `<div class="stack"><div class="page-head"><h1>Settings</h1></div>
+    <section class="card"><div class="card-head"><h3>View-only access</h3><span class="year-pill">Connected</span></div>
+      <p class="muted" style="margin:0">You can see every year's accounts, reports and history. Entries are added and changed by the puja accounts keeper.</p></section>
+    <section class="card form"><div class="field"><span class="label">Year</span>${yearChips() || `<span class="year-pill">${S.year}</span>`}</div></section>
+    <section class="card"><div class="btn-row">
+      <button class="btn" type="button" data-act="retry">Reload data</button>
+      <button class="btn btn-danger" type="button" id="cForget">Remove access from this device</button></div></section>
+  </div>`;
+}
+function viewShare() {
+  return `<section class="card form">
+    <div class="card-head" style="margin:0"><h3>Share a view-only link</h3></div>
+    <p class="muted small" style="margin:0">Family members who open this link can see the home page, ledger, reports and history, but cannot add, edit or delete anything.</p>
+    <details><summary>Create the read-only token (once)</summary><ol class="steps small">
+      <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Generate new fine-grained token</a>. Name it e.g. <i>puja-viewers</i>.</li>
+      <li>Repository access: <b>Only select repositories</b> → your data repo.</li>
+      <li>Permissions → Repository → <b>Contents: Read-only</b>. Nothing else.</li>
+      <li>Generate, copy, and paste it below. <b>Do not use your own editing token here.</b></li></ol></details>
+    <div class="field"><label for="shTok">Read-only token</label>
+      <input class="input" id="shTok" type="password" placeholder="github_pat_…" autocapitalize="off" spellcheck="false"></div>
+    <button class="btn btn-gold" type="button" id="shMake">Create link</button>
+    <div id="shOut" hidden>
+      <div class="field"><label for="shLink">View-only link</label><input class="input" id="shLink" readonly></div>
+      <div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" type="button" id="shCopy">Copy link</button><button class="btn" type="button" id="shSend" hidden>Share…</button></div>
+      <p class="muted small" style="margin:10px 0 0">Anyone with this link can view the accounts. To cut off access, delete the <i>puja-viewers</i> token on GitHub and make a new link.</p>
+    </div>
+  </section>`;
+}
+async function joinFromLink(params) {
+  const cfg = { mode: 'github', owner: params.get('o') || '', repo: params.get('r') || '', branch: params.get('b') || '', token: params.get('t') || '', readonly: true };
+  history.replaceState(null, '', location.pathname + '#/'); // keep the token out of the address bar
+  if (!cfg.owner || !cfg.repo || !cfg.token) { toast('That link is incomplete', true); return render(); }
+  if (S.cfg && !S.cfg.readonly && S.cfg.mode === 'github' && !confirm('This device can currently edit the accounts. Switch it to view-only?')) return render();
+  Object.assign(S, { cfg, store: new GitHubStore(cfg), years: [], data: {}, error: '', ready: false });
+  LS.set('lp-config', cfg);
+  render();
+  await refreshAll();
+  if (!S.error) toast('Welcome! You have view-only access 🙏');
+}
 function viewSettings() {
+  if (RO()) return viewSettingsReadonly();
   const c = S.cfg || {};
   const first = !S.cfg;
   const d = S.cfg ? yd() : null;
   return `<div class="stack ${first ? 'welcome' : ''}">
-    ${first ? `<div class="welcome-hero">${feet}<h1>Welcome</h1><p class="muted">Keep this year's puja collections and expenses in one place — from your phone or laptop.</p></div>` : '<div class="page-head"><h1>Settings</h1></div>'}
+    ${first ? `<div class="welcome-hero">${feet}<h1>Welcome</h1><p class="muted">Keep this year's puja collections and expenses in one place — from your phone or laptop.</p><p class="muted small">Family member? Open the view-only link you were sent instead.</p></div>` : '<div class="page-head"><h1>Settings</h1></div>'}
     <form class="card form" id="cfgForm" autocomplete="off">
       <div class="card-head" style="margin:0"><h3>Connect your private data repo</h3>${c.mode === 'github' ? '<span class="year-pill">Connected</span>' : ''}</div>
       <div class="row-2">
@@ -786,10 +834,49 @@ function viewSettings() {
     <section class="card"><div class="btn-row">
       <button class="btn" type="button" data-act="retry">Reload data</button>
       <button class="btn btn-danger" type="button" id="cForget">Disconnect this device</button></div></section>` : ''}
+    ${c.mode === 'github' ? viewShare() : ''}
   </div>`;
+}
+function bindShare() {
+  const mk = $('#shMake');
+  if (!mk) return;
+  mk.onclick = async () => {
+    const t = $('#shTok').value.trim();
+    if (!t) return toast('Paste the read-only token first', true);
+    if (t === S.cfg.token) return toast('That is your editing token — create a separate read-only one', true);
+    mk.disabled = true; mk.textContent = 'Checking…';
+    try {
+      const ys = await new GitHubStore({ ...S.cfg, token: t }).listYears();
+      if (!ys.length) throw new Error('That token cannot see any year files — check its repository access.');
+      const q = new URLSearchParams({ o: S.cfg.owner, r: S.cfg.repo, ...(S.cfg.branch ? { b: S.cfg.branch } : {}), t });
+      $('#shLink').value = `${location.origin}${location.pathname}#/join?${q}`;
+      $('#shOut').hidden = false;
+      if (navigator.share) $('#shSend').hidden = false;
+    } catch (e) { toast(e.message, true); }
+    mk.disabled = false; mk.textContent = 'Create link';
+  };
+  $('#shCopy').onclick = async () => {
+    const v = $('#shLink').value;
+    try { await navigator.clipboard.writeText(v); toast('Link copied'); }
+    catch { $('#shLink').select(); toast('Select and copy the link manually'); }
+  };
+  $('#shSend').onclick = () => navigator.share({ title: 'Lakshmi Puja accounts', text: 'Lakshmi Puja accounts (view only)', url: $('#shLink').value }).catch(() => { });
+}
+function bindForget() {
+  const fg = $('#cForget');
+  if (fg) fg.onclick = () => {
+    if (!confirm('Remove the saved access and cached data from this device? (The data on GitHub is not touched.)')) return;
+    LS.del(cacheKey()); LS.del('lp-config'); LS.del('lp-year');
+    if (S.cfg.mode === 'demo') { for (const y of S.years) LS.del('lp-demo-' + y); LS.del('lp-demo-years'); }
+    Object.assign(S, { cfg: null, store: null, years: [], data: {}, year: null, error: '' });
+    location.hash = '#/settings'; render();
+  };
 }
 function bindSettings() {
   bindYearChips();
+  bindForget();
+  if (RO()) return;
+  bindShare();
   const f = $('#cfgForm');
   f.addEventListener('submit', async ev => {
     ev.preventDefault();
@@ -834,14 +921,6 @@ function bindSettings() {
     try { await mutate(S.year, d => { d.notes = notes; }, `Update notes ${S.year}`); toast('Notes saved'); }
     catch (e) { toast(e.message, true); }
     ns.disabled = false;
-  };
-  const fg = $('#cForget');
-  if (fg) fg.onclick = () => {
-    if (!confirm('Remove the saved token and cached data from this device? (Your data on GitHub is not touched.)')) return;
-    LS.del(cacheKey()); LS.del('lp-config'); LS.del('lp-year');
-    if (S.cfg.mode === 'demo') { for (const y of S.years) LS.del('lp-demo-' + y); LS.del('lp-demo-years'); }
-    Object.assign(S, { cfg: null, store: null, years: [], data: {}, year: null, error: '' });
-    location.hash = '#/settings'; render();
   };
 }
 

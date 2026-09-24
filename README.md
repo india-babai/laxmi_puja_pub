@@ -44,6 +44,14 @@ No server, no database, no monthly cost.
 
 Tip: on your phone, open the site and choose *Add to Home screen* to use it like an app.
 
+## Sharing with family (view only)
+
+1. Create a **second** fine-grained token (e.g. *puja-viewers*): only `laxmi_puja_private`, **Contents: Read-only**.
+2. On your own device: ⚙ Settings → **Share a view-only link** → paste that token → **Create link** → copy or share it (WhatsApp etc.).
+3. Anyone who opens the link sees Home, Ledger, Report (PDF/Excel/CSV) and History. There's no ＋ button, entries can't be edited, and GitHub itself rejects writes from that token.
+
+Anyone who has the link can view the accounts, and the link can be forwarded. To cut off access, delete the *puja-viewers* token on GitHub, create a new one, and send a new link.
+
 ## Local preview
 
 ```

@@ -379,3 +379,7 @@ details summary { cursor: pointer; font-weight: 600; }
   .summary-grid div { padding: 8px 4px; }
   .summary-grid .val { font-size: 1rem; }
 }
+
+/* ---------- View-only (family) mode ---------- */
+.readonly .edit-only { display: none !important; }
+.readonly .tabbar { grid-template-columns: repeat(4, 1fr); align-items: center; }
