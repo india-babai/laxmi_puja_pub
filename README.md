@@ -37,7 +37,8 @@ No server, no database, no monthly cost.
 |---|---|
 | **Home** | Balance / shortfall, collected vs spent, category breakdown, *Yet to receive* (people who gave last year but not yet this year; tap one to log it with last year's amount pre-filled), *Money with people* (who holds cash and who is owed) |
 | **＋** | Add a collection or expense. Names and items auto-suggest from past years, and the category fills itself in. |
-| **Ledger** | Every entry, with filter and search. Tap an entry to edit or delete it. |
+| **Ledger** | Every entry, with filter and search (including *📎 With receipts*). Tap an entry to edit or delete it. Tap 📎 to see its receipts. |
+| **Receipts** | In the entry form, *📎 Add photos / PDF* or *📷 Camera* attaches as many bills as you like. Photos are shrunk to about 200–400 KB before upload and stored in the private repo under `receipts/<year>/`. They open in a full-screen viewer from the ledger and the report (*See bills*), for view-only family links too. |
 | **Report** | Formal statement for any year → *Print / Save PDF*, *Excel* (Summary, Collections, Expenses sheets), *CSV* |
 | **History** | Year-on-year chart, category comparison, each person's contributions across years, full JSON backup |
 | **⚙ Settings** | Connection, start a new year, notes for the year (settlements such as "X to get ₹500") |

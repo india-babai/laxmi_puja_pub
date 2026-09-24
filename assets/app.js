@@ -58,7 +58,7 @@ const blankYear = y => ({ year: y, entries: [], notes: [], updatedAt: new Date()
 class GitHubStore {
   constructor(c) {
     this.c = c;
-    this.base = `https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents/years`;
+    this.base = `https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents`;
     this.ref = c.branch ? `?ref=${encodeURIComponent(c.branch)}` : '';
   }
   async req(path, opts = {}) {
@@ -67,7 +67,7 @@ class GitHubStore {
       r = await fetch(this.base + path, {
         cache: 'no-store', ...opts,
         headers: {
-          Accept: 'application/vnd.github+json',
+          Accept: opts.raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
           Authorization: `Bearer ${this.c.token}`,
           'X-GitHub-Api-Version': '2022-11-28',
           ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
@@ -86,26 +86,40 @@ class GitHubStore {
         `GitHub error ${r.status}: ${msg}`);
       e.status = r.status; throw e;
     }
-    return r.json();
+    return opts.raw ? r.blob() : r.json();
   }
   async listYears() {
     try {
-      const items = await this.req(this.ref);
+      const items = await this.req('/years' + this.ref);
       return items.map(i => i.name).filter(n => /^\d{4}\.json$/.test(n)).map(n => +n.slice(0, 4));
     } catch (e) { if (e.status === 404) return []; throw e; }
   }
   async load(y) {
-    const j = await this.req(`/${y}.json${this.ref}`);
+    const j = await this.req(`/years/${y}.json${this.ref}`);
     return { data: JSON.parse(b64dec(j.content)), sha: j.sha };
   }
   async save(y, data, sha, message) {
     const body = { message, content: b64enc(JSON.stringify(data, null, 1) + '\n') };
     if (sha) body.sha = sha;
     if (this.c.branch) body.branch = this.c.branch;
-    const j = await this.req(`/${y}.json`, { method: 'PUT', body: JSON.stringify(body) });
+    const j = await this.req(`/years/${y}.json`, { method: 'PUT', body: JSON.stringify(body) });
     return j.content.sha;
   }
+  /* Receipts: binary files stored under receipts/<year>/<entry id>/ */
+  async putFile(path, b64, message) {
+    const body = { message, content: b64 };
+    if (this.c.branch) body.branch = this.c.branch;
+    const j = await this.req('/' + encPath(path), { method: 'PUT', body: JSON.stringify(body) });
+    return j.content.sha;
+  }
+  getFile(path) { return this.req('/' + encPath(path) + this.ref, { raw: true }); }
+  async deleteFile(path, sha, message) {
+    const body = { message, sha };
+    if (this.c.branch) body.branch = this.c.branch;
+    await this.req('/' + encPath(path), { method: 'DELETE', body: JSON.stringify(body) });
+  }
 }
+const encPath = p => p.split('/').map(encodeURIComponent).join('/');
 
 class DemoStore {
   async listYears() {
@@ -135,7 +149,113 @@ class DemoStore {
     if (!ys.includes(y)) { ys.push(y); LS.set('lp-demo-years', ys); }
     return 'demo';
   }
+  async putFile(path, b64, message, type) {
+    try { localStorage.setItem('lp-demo-file:' + path, `data:${type};base64,${b64}`); }
+    catch { throw new Error('Browser storage is full — demo mode can only hold a few photos.'); }
+    return 'demo';
+  }
+  async getFile(path) {
+    const u = localStorage.getItem('lp-demo-file:' + path);
+    if (!u) { const e = new Error('Receipt not found'); e.status = 404; throw e; }
+    return (await fetch(u)).blob();
+  }
+  async deleteFile(path) { LS.del('lp-demo-file:' + path); }
 }
+
+/* ---------------- receipts ---------------- */
+const MAX_UPLOAD = 15 * 1024 * 1024;
+const isImg = a => /^image\//.test(a.type || '');
+const isPdf = a => a.type === 'application/pdf' || /\.pdf$/i.test(a.name || '');
+const blobCache = new Map(); // path -> Promise<objectURL>
+function attachmentURL(a) {
+  if (a.localUrl) return Promise.resolve(a.localUrl);
+  if (!blobCache.has(a.path)) {
+    const pr = S.store.getFile(a.path).then(b => URL.createObjectURL(a.type ? new Blob([b], { type: a.type }) : b));
+    pr.catch(() => blobCache.delete(a.path));
+    blobCache.set(a.path, pr);
+  }
+  return blobCache.get(a.path);
+}
+function blobToB64(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1]);
+    r.onerror = () => rej(new Error('Could not read the file'));
+    r.readAsDataURL(blob);
+  });
+}
+/* Shrink phone photos (often 3–8 MB) to ~1600px JPEG before upload. */
+async function prepareFile(file) {
+  if (!/^image\/(jpeg|png|webp|heic|heif)$/i.test(file.type) || !window.createImageBitmap) return file;
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { return file; }
+  const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close && bmp.close();
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.78));
+  if (!blob || blob.size >= file.size) return file;
+  return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+}
+/* Delete receipt files one after another (parallel commits would conflict). */
+async function deleteFiles(list, why) {
+  for (const a of list) {
+    try { await S.store.deleteFile(a.path, a.sha, why); } catch { /* already gone, or no rights: ignore */ }
+    blobCache.delete(a.path);
+  }
+}
+function attLabel(n) { return `📎 ${n}`; }
+
+function openViewer(list, start = 0, caption = '') {
+  if (!list || !list.length) return;
+  let i = start;
+  let box = $('#viewer');
+  if (!box) { box = document.createElement('div'); box.id = 'viewer'; box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); document.body.appendChild(box); }
+  box.innerHTML = `<div class="vw-top"><div class="vw-cap"><b>${esc(caption)}</b><span class="vw-count"></span></div>
+      <a class="vw-btn" id="vwDl" title="Download" aria-label="Download">⤓</a><button class="vw-btn" id="vwClose" title="Close" aria-label="Close">✕</button></div>
+    <div class="vw-stage"><button class="vw-nav" id="vwPrev" aria-label="Previous">‹</button><div class="vw-media"></div><button class="vw-nav" id="vwNext" aria-label="Next">›</button></div>`;
+  box.hidden = false;
+  document.body.style.overflow = 'hidden';
+  const media = $('.vw-media', box);
+  const show = async () => {
+    const a = list[i];
+    $('.vw-count', box).textContent = list.length > 1 ? `${i + 1} / ${list.length}` : '';
+    $('#vwPrev').hidden = $('#vwNext').hidden = list.length < 2;
+    media.innerHTML = '<div class="loading"><span class="diya"></span>Loading receipt…</div>';
+    try {
+      const url = await attachmentURL(a);
+      if (list[i] !== a) return;
+      const dl = $('#vwDl'); dl.href = url; dl.download = a.name || 'receipt';
+      media.innerHTML = isImg(a) ? `<img src="${url}" alt="${esc(a.name || 'Receipt')}">`
+        : isPdf(a) ? `<iframe src="${url}" title="${esc(a.name)}"></iframe><a class="btn btn-gold vw-open" href="${url}" target="_blank" rel="noopener">Open PDF</a>`
+        : `<div class="vw-file">📄 ${esc(a.name)}<br><a class="btn btn-gold" href="${url}" download="${esc(a.name)}">Download</a></div>`;
+    } catch (e) { media.innerHTML = `<div class="vw-file">Could not load this receipt.<br><span class="small">${esc(e.message)}</span></div>`; }
+  };
+  const close = () => { box.hidden = true; box.innerHTML = ''; document.body.style.overflow = ''; document.removeEventListener('keydown', key); };
+  const go = d => { i = (i + d + list.length) % list.length; show(); };
+  const key = e => { if (e.key === 'Escape') close(); else if (e.key === 'ArrowLeft') go(-1); else if (e.key === 'ArrowRight') go(1); };
+  document.addEventListener('keydown', key);
+  $('#vwClose').onclick = close;
+  $('#vwPrev').onclick = () => go(-1);
+  $('#vwNext').onclick = () => go(1);
+  $('.vw-stage', box).addEventListener('click', e => { if (e.target.classList.contains('vw-stage')) close(); });
+  let x0 = null;
+  media.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; }, { passive: true });
+  media.addEventListener('touchend', e => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1); x0 = null; });
+  show();
+}
+/* Any [data-att="year|entryId"] button opens that entry's receipts. */
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-att]');
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const [y, id] = b.dataset.att.split('|');
+  const en = yd(+y).entries.find(x => x.id === id);
+  if (en) openViewer(en.attachments, 0, `${en.name} · ${signed(en.amount, en.type)}`);
+});
 
 /* ---------------- state ---------------- */
 const S = {
@@ -305,10 +425,11 @@ function entryRow(e) {
   const inn = e.type === 'collection';
   const meta = [e.category, e.mode, e.handledBy && (inn ? 'to ' : 'by ') + e.handledBy, fmtDate(e.date)].filter(Boolean).join(' · ');
   const tag = RO() ? 'div' : 'a';
-  return `<li><${tag} class="entry"${RO() ? '' : ` href="#/add?id=${encodeURIComponent(e.id)}"`}>
+  const n = (e.attachments || []).length;
+  return `<li${n ? ' class="has-att"' : ''}><${tag} class="entry"${RO() ? '' : ` href="#/add?id=${encodeURIComponent(e.id)}"`}>
     <span class="entry-ico ${inn ? 'in' : 'out'}" aria-hidden="true">${inn ? '↓' : '↑'}</span>
     <span class="entry-main"><span class="entry-name">${esc(e.name)}</span><span class="entry-meta">${esc(meta)}</span></span>
-    <span class="entry-amt num ${inn ? 'in' : 'out'}">${signed(e.amount, e.type)}</span></${tag}></li>`;
+    <span class="entry-amt num ${inn ? 'in' : 'out'}">${signed(e.amount, e.type)}</span></${tag}>${n ? `<button class="att-btn" type="button" data-att="${S.year}|${esc(e.id)}" title="See receipts" aria-label="See ${n} receipt${n > 1 ? 's' : ''}">${attLabel(n)}</button>` : ''}</li>`;
 }
 const feet = '<div class="feet" aria-hidden="true"><i></i><i></i><i></i><i></i></div>';
 function bars(rows, total, cls = '') {
@@ -439,6 +560,15 @@ function viewAdd(p) {
     <div class="field"><span class="label">Payment mode</span><div class="chips">${chipset('mode', [...new Set([...MODES, e.mode].filter(Boolean))], e.mode)}</div></div>
     <div class="field"><label for="fRem">Remarks <span class="muted small">(optional)</span></label>
       <textarea class="input" id="fRem" name="remarks" rows="2" placeholder="Bill no., who it was paid to, etc.">${esc(e.remarks)}</textarea></div>
+    <div class="field"><span class="label">Receipts / photos <span class="muted small">(optional, add as many as you like)</span></span>
+      <div class="thumbs" id="thumbs"></div>
+      <div class="btn-row">
+        <label class="btn" for="fFiles">📎 Add photos / PDF</label>
+        <label class="btn cam-only" for="fCam">📷 Camera</label>
+      </div>
+      <input type="file" id="fFiles" accept="image/*,application/pdf" multiple hidden>
+      <input type="file" id="fCam" accept="image/*" capture="environment" hidden>
+    </div>
     <button class="btn btn-primary btn-lg btn-block" type="submit" id="saveBtn">${existing ? 'Save changes' : 'Save entry'}</button>
     ${existing ? `<div class="btn-row"><a class="btn" href="#/ledger" style="flex:1">Cancel</a><button type="button" class="btn btn-danger" id="delBtn" style="flex:1">Delete</button></div>` : ''}
   </form>`;
@@ -476,6 +606,42 @@ function bindAdd(p) {
   f.name.addEventListener('input', showLast);
   if (p.get('cat')) f.dataset.catTouched = '1';
   fillNames(); showLast();
+
+  // Receipts: kept (already uploaded), pending (picked, not yet uploaded), removed (to delete after save).
+  const existing = id ? yd().entries.find(x => x.id === id) : null;
+  const kept = [...((existing && existing.attachments) || [])];
+  const pending = [];
+  const removed = [];
+  const thumbs = $('#thumbs');
+  const drawThumbs = () => {
+    const all = [...kept, ...pending];
+    thumbs.innerHTML = all.map((a, i) => `<div class="thumb${a.localUrl ? ' new' : ''}">
+        <button type="button" class="thumb-view" data-ti="${i}" aria-label="View ${esc(a.name)}">${isImg(a) ? '<span class="diya"></span>' : `<span class="thumb-doc">📄<br>${esc((a.name || '').slice(0, 18))}</span>`}</button>
+        <button type="button" class="thumb-x" data-tx="${i}" aria-label="Remove">✕</button></div>`).join('');
+    all.forEach((a, i) => {
+      if (!isImg(a)) return;
+      attachmentURL(a).then(u => { const b = $(`[data-ti="${i}"]`, thumbs); if (b) b.innerHTML = `<img src="${u}" alt="">`; })
+        .catch(() => { const b = $(`[data-ti="${i}"]`, thumbs); if (b) b.innerHTML = '<span class="thumb-doc">⚠</span>'; });
+    });
+    $$('[data-ti]', thumbs).forEach(b => b.onclick = () => openViewer(all, +b.dataset.ti, f.name.value || 'Receipt'));
+    $$('[data-tx]', thumbs).forEach(b => b.onclick = () => {
+      const i = +b.dataset.tx;
+      if (i < kept.length) removed.push(...kept.splice(i, 1));
+      else { const [pp] = pending.splice(i - kept.length, 1); URL.revokeObjectURL(pp.localUrl); }
+      drawThumbs();
+    });
+  };
+  const addFiles = async files => {
+    for (const file of files) {
+      if (!/^image\/|^application\/pdf$/.test(file.type) && !/\.(jpe?g|png|heic|webp|pdf)$/i.test(file.name)) { toast(`${file.name}: only photos or PDFs`, true); continue; }
+      const ready = await prepareFile(file);
+      if (ready.size > MAX_UPLOAD) { toast(`${file.name} is too large (max 15 MB)`, true); continue; }
+      pending.push({ file: ready, name: ready.name, type: ready.type || (/\.pdf$/i.test(ready.name) ? 'application/pdf' : ''), size: ready.size, localUrl: URL.createObjectURL(ready) });
+    }
+    drawThumbs();
+  };
+  ['#fFiles', '#fCam'].forEach(sel => $(sel).addEventListener('change', async e => { await addFiles([...e.target.files]); e.target.value = ''; }));
+  drawThumbs();
   if (!id) setTimeout(() => f.amount.focus(), 50);
 
   f.addEventListener('submit', async ev => {
@@ -491,12 +657,26 @@ function bindAdd(p) {
     };
     const btn = $('#saveBtn'); btn.disabled = true; btn.textContent = 'Saving…';
     try {
+      // Upload new receipts one by one; move each to "kept" so a retry does not re-upload it.
+      for (let k = 0; pending.length; k++) {
+        const pp = pending[0];
+        btn.textContent = `Uploading receipt ${k + 1}…`;
+        const ext = (pp.name.match(/\.([a-z0-9]{2,5})$/i) || [, isPdf(pp) ? 'pdf' : 'jpg'])[1].toLowerCase();
+        const path = `receipts/${S.year}/${entry.id}/${uid()}.${ext}`;
+        const sha = await S.store.putFile(path, await blobToB64(pp.file), `Receipt: ${entry.name}`, pp.type);
+        const att = { path, name: pp.name, type: pp.type, size: pp.size, sha };
+        blobCache.set(path, Promise.resolve(pp.localUrl));
+        kept.push(att); pending.shift();
+      }
+      entry.attachments = kept.map(({ localUrl, file, ...a }) => a);
+      btn.textContent = 'Saving…';
       await mutate(S.year, d => {
         const i = d.entries.findIndex(x => x.id === entry.id);
         if (i >= 0) d.entries[i] = { ...d.entries[i], ...entry, editedAt: new Date().toISOString() };
         else d.entries.push({ ...entry, createdAt: new Date().toISOString() });
       }, `${id ? 'Edit' : 'Add'} ${entry.type}: ${entry.name} ₹${entry.amount}`);
       LS.set('lp-last-mode', entry.mode); LS.set('lp-last-handler', entry.handledBy);
+      if (removed.length) deleteFiles(removed.splice(0), `Remove receipt: ${entry.name}`);
       toast(`${id ? 'Updated' : 'Saved'} · ${signed(entry.amount, entry.type)} ${entry.name}`);
       if (id) { location.hash = '#/ledger'; }
       else {
@@ -516,6 +696,7 @@ function bindAdd(p) {
     del.disabled = true;
     try {
       await mutate(S.year, d => { d.entries = d.entries.filter(x => x.id !== id); }, `Delete entry ${id}`);
+      deleteFiles([...kept, ...removed], `Delete receipts of entry ${id}`);
       toast('Entry deleted');
       location.hash = '#/ledger';
     } catch (e) { toast(e.message, true); del.disabled = false; }
@@ -523,7 +704,7 @@ function bindAdd(p) {
 }
 
 /* ---------------- Ledger ---------------- */
-const ledgerState = { type: 'all', q: '', cat: '' };
+const ledgerState = { type: 'all', q: '', cat: '', att: false };
 function viewLedger() {
   const d = yd();
   const cats = [...new Set(d.entries.map(e => e.category).filter(Boolean))].sort();
@@ -534,6 +715,7 @@ function viewLedger() {
       <div class="filters" style="margin-bottom:12px">
         <div class="chips" role="group" aria-label="Show">
           ${['all', 'collection', 'expense'].map(t => `<button class="chip ${ledgerState.type === t ? 'on' : ''}" data-ltype="${t}">${{ all: 'All', collection: 'Collections', expense: 'Expenses' }[t]}</button>`).join('')}
+          <button class="chip ${ledgerState.att ? 'on' : ''}" data-latt aria-pressed="${ledgerState.att}">📎 With receipts</button>
         </div>
         <select class="input" id="lCat" style="width:auto"><option value="">All categories</option>${cats.map(c => `<option ${c === ledgerState.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <input class="input grow" id="lQ" type="search" placeholder="Search name, remarks…" value="${esc(ledgerState.q)}">
@@ -546,6 +728,7 @@ function renderLedgerBody() {
   const q = norm(ledgerState.q);
   const list = sortEntries(yd().entries.filter(e =>
     (ledgerState.type === 'all' || e.type === ledgerState.type) &&
+    (!ledgerState.att || (e.attachments || []).length) &&
     (!ledgerState.cat || e.category === ledgerState.cat) &&
     (!q || norm([e.name, e.remarks, e.handledBy, e.mode, e.category].join(' ')).includes(q))));
   const c = sum(list.filter(e => e.type === 'collection')), x = sum(list.filter(e => e.type === 'expense'));
@@ -558,6 +741,8 @@ function bindLedger() {
     $$('[data-ltype]').forEach(x => x.classList.toggle('on', x === b));
     renderLedgerBody();
   }));
+  const la = $('[data-latt]');
+  la.addEventListener('click', () => { ledgerState.att = !ledgerState.att; la.classList.toggle('on', ledgerState.att); la.setAttribute('aria-pressed', ledgerState.att); renderLedgerBody(); });
   $('#lCat').addEventListener('change', e => { ledgerState.cat = e.target.value; renderLedgerBody(); });
   $('#lQ').addEventListener('input', e => { ledgerState.q = e.target.value; renderLedgerBody(); });
   renderLedgerBody();
@@ -574,7 +759,7 @@ function groupTable(entries, type) {
   const body = groups.map(([cat, tot]) => {
     const rows = entries.filter(e => (e.category || '—') === cat).sort((a, b) => b.amount - a.amount);
     return `<tr class="grp"><td colspan="5">${esc(cat)}</td></tr>`
-      + rows.map(e => `<tr><td>${esc(e.name)}</td><td class="num">${fmtDate(e.date) || '—'}</td><td>${esc(inn ? e.mode : e.handledBy) || '—'}</td><td class="small">${esc(e.remarks)}</td><td class="r num">${money(e.amount)}</td></tr>`).join('')
+      + rows.map(e => `<tr><td>${esc(e.name)}</td><td class="num">${fmtDate(e.date) || '—'}</td><td>${esc(inn ? e.mode : e.handledBy) || '—'}</td><td class="small">${esc(e.remarks)}${(e.attachments || []).length ? ` <button class="att-link" type="button" data-att="${S.year}|${esc(e.id)}">📎 See bill${e.attachments.length > 1 ? 's' : ''} (${e.attachments.length})</button>` : ''}</td><td class="r num">${money(e.amount)}</td></tr>`).join('')
       + `<tr class="sub"><td colspan="4">Subtotal · ${esc(cat)}</td><td class="r num">${money(tot)}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${body}
@@ -624,6 +809,7 @@ function rowsForExport(d) {
   return sortEntries(d.entries).reverse().map(e => ({
     Type: e.type === 'collection' ? 'Collection' : 'Expense', Date: e.date || '', Category: e.category || '',
     'Name / Item': e.name, Amount: e.amount, Mode: e.mode || '', 'Handled by': e.handledBy || '', Remarks: e.remarks || '',
+    Receipts: (e.attachments || []).length || '',
   }));
 }
 function download(name, blob) {
@@ -634,7 +820,7 @@ function download(name, blob) {
 }
 function exportCsv() {
   const rows = rowsForExport(yd());
-  const cols = ['Type', 'Date', 'Category', 'Name / Item', 'Amount', 'Mode', 'Handled by', 'Remarks'];
+  const cols = ['Type', 'Date', 'Category', 'Name / Item', 'Amount', 'Mode', 'Handled by', 'Remarks', 'Receipts'];
   const q = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
   const csv = [cols.join(','), ...rows.map(r => cols.map(c => q(r[c] ?? '')).join(','))].join('\r\n');
   download(`Lakshmi-Puja-${S.year}.csv`, new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
@@ -665,10 +851,10 @@ async function exportXlsx() {
   X.utils.book_append_sheet(wb, ws0, 'Summary');
   const sheet = (list, who) => {
     const rows = list.slice().sort((a, b) => (a.category || '').localeCompare(b.category || '') || b.amount - a.amount)
-      .map(e => ({ Category: e.category || '', [who === 'Received by' ? 'Name' : 'Item']: e.name, Amount: e.amount, Date: e.date || '', Mode: e.mode || '', [who]: e.handledBy || '', Remarks: e.remarks || '' }));
+      .map(e => ({ Category: e.category || '', [who === 'Received by' ? 'Name' : 'Item']: e.name, Amount: e.amount, Date: e.date || '', Mode: e.mode || '', [who]: e.handledBy || '', Remarks: e.remarks || '', Receipts: (e.attachments || []).length || '' }));
     const ws = X.utils.json_to_sheet(rows);
     X.utils.sheet_add_aoa(ws, [['Total', '', sum(list)]], { origin: -1 });
-    ws['!cols'] = [{ wch: 22 }, { wch: 34 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 50 }];
+    ws['!cols'] = [{ wch: 22 }, { wch: 34 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 50 }, { wch: 9 }];
     return ws;
   };
   X.utils.book_append_sheet(wb, sheet(col, 'Received by'), 'Collections');
