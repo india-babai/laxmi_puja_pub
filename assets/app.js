@@ -1003,15 +1003,17 @@ function scanSchema(type) {
     },
   };
 }
-async function readList(photo, type) {
-  const client = await aiClient();
+const AI_MAX_OUT = 5000; // hard cap on the reply, which also caps the worst-case cost of a scan
+const USD_INR = 88;      // approximate rate, only for showing rupees
+const usdInr = v => `$${v < 0.1 ? v.toFixed(3) : v.toFixed(2)} (≈ ₹${Math.max(1, Math.round(v * USD_INR))})`;
+async function scanRequest(photo, type) {
   const known = suggestions(type).filter(n => n.length <= 40).slice(0, 80);
   const context = `Year ${S.year}. This is a list of ${type === 'expense' ? 'expenses / payments made' : 'collections / money received from people'}.
 KNOWN ${type === 'expense' ? 'items' : 'names'}: ${known.join('; ')}
 KNOWN people: ${handlers().slice(0, 40).join('; ')}`;
-  const res = await client.beta.messages.create({
+  return {
     model: AI_MODEL,
-    max_tokens: 8000,
+    max_tokens: AI_MAX_OUT,
     betas: ['server-side-fallback-2026-07-01'],
     fallbacks: 'default', // if Claude declines, Anthropic retries on another model automatically
     output_config: { effort: 'low', format: { type: 'json_schema', schema: scanSchema(type) } },
@@ -1020,17 +1022,37 @@ KNOWN people: ${handlers().slice(0, 40).join('; ')}`;
       { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobToB64(photo) } },
       { type: 'text', text: context },
     ] }],
-  });
+  };
+}
+/* Free: count the exact input tokens of this very request, and estimate the reply from past scans. */
+async function estimateScan(req) {
+  const client = await aiClient();
+  const { model, system, messages } = req;
+  let input;
+  try { input = (await client.messages.countTokens({ model, system, messages, output_config: { format: req.output_config.format } })).input_tokens; }
+  catch (e) { if (e.status !== 400) throw e; input = (await client.messages.countTokens({ model, system, messages })).input_tokens; }
+  const outs = LS.get('lp-ai-spend', {}).outs || [];
+  const out = outs.length ? Math.round(sum(outs, v => v) / outs.length) : 1500;
+  return {
+    input, out, basedOn: outs.length,
+    inCost: input * AI_USD.in, outCost: out * AI_USD.out,
+    likely: input * AI_USD.in + out * AI_USD.out,
+    max: input * AI_USD.in + AI_MAX_OUT * AI_USD.out,
+  };
+}
+async function readList(req) {
+  const client = await aiClient();
+  const res = await client.beta.messages.create(req);
   const u = res.usage || {};
   const cost = (u.input_tokens || 0) * AI_USD.in + (u.output_tokens || 0) * AI_USD.out;
   const spend = LS.get('lp-ai-spend', { usd: 0, scans: 0 });
-  LS.set('lp-ai-spend', { usd: spend.usd + cost, scans: spend.scans + 1, last: cost });
+  LS.set('lp-ai-spend', { usd: spend.usd + cost, scans: spend.scans + 1, last: cost, outs: [...(spend.outs || []), u.output_tokens || 0].slice(-10) });
   if (res.stop_reason === 'refusal') throw new Error('Claude could not read this photo. Try a clearer photo.');
   if (res.stop_reason === 'max_tokens') throw new Error('The list is too long for one photo — photograph half the page at a time.');
   const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('');
   let out;
   try { out = JSON.parse(text); } catch { throw new Error('Could not understand the reply — please try again.'); }
-  return out;
+  return { out, cost };
 }
 const spendLine = () => { const sp = LS.get('lp-ai-spend', { usd: 0, scans: 0 }); return `Used on this device: ~$${sp.usd.toFixed(2)} for ${sp.scans} scan${sp.scans === 1 ? '' : 's'}${sp.last ? ` (last one ~$${sp.last.toFixed(3)})` : ''}.`; };
 
@@ -1060,6 +1082,27 @@ function viewScan() {
     ${SCAN.err ? `<div class="banner err">⚠ ${esc(SCAN.err)}</div>` : ''}
     <p class="muted small" style="margin:0">Tips: lay the paper flat in good light, fill the frame, one page per photo. Nothing is saved until you check the rows and tap <b>Add</b>.<br>${spendLine()}</p>
   </div>`;
+  if (SCAN.stage === 'estimate') {
+    const e = SCAN.est;
+    return `<div class="card stack">
+    <div class="page-head"><h2>Check the cost first</h2><span class="year-pill">${t === 'expense' ? 'Expenses' : 'Collections'}</span></div>
+    <img class="scan-photo" src="${SCAN.photoUrl}" alt="Your list" style="display:block;margin:0 auto">
+    ${!e && !SCAN.estErr ? '<div class="loading" style="padding:10px 0"><span class="diya"></span>Checking the cost (this check is free)…</div>' : ''}
+    ${e ? `<div class="cost-card"><table><tbody>
+      <tr><td>Photo + instructions <span class="muted small">(exact: ${e.input.toLocaleString('en-IN')} tokens)</span></td><td class="r num">${usdInr(e.inCost)}</td></tr>
+      <tr><td>Claude's reply <span class="muted small">(estimate: ~${e.out.toLocaleString('en-IN')} tokens, ${e.basedOn ? `average of your last ${e.basedOn} scan${e.basedOn > 1 ? 's' : ''}` : 'typical list'})</span></td><td class="r num">${usdInr(e.outCost)}</td></tr>
+      <tr class="pos"><td>Expected cost</td><td class="r num">${usdInr(e.likely)}</td></tr>
+      <tr><td class="muted small" colspan="2">It can never cost more than ${usdInr(e.max)} — the reply length is capped.</td></tr>
+    </tbody></table></div>` : ''}
+    ${SCAN.estErr ? `<div class="banner err">⚠ Could not check the cost: ${esc(SCAN.estErr)}</div>` : ''}
+    <div class="btn-row">
+      <button type="button" class="btn" id="scBack" style="flex:1">Cancel</button>
+      ${SCAN.estErr ? '<button type="button" class="btn" id="scRecheck" style="flex:1">Check again</button>' : ''}
+      <button type="button" class="btn btn-primary" id="scGo" style="flex:2" ${e || SCAN.estErr ? '' : 'disabled'}>${e ? `Read the list · ~₹${Math.max(1, Math.round(e.likely * USD_INR))}` : SCAN.estErr ? 'Read anyway' : 'Read the list'}</button>
+    </div>
+    <p class="muted small" style="margin:0">Nothing is charged until you tap <b>Read the list</b>. ${spendLine()}</p>
+  </div>`;
+  }
   if (SCAN.stage === 'reading') return `<div class="card stack" style="text-align:center">
     <img class="scan-photo" src="${SCAN.photoUrl}" alt="Your list">
     <div class="loading" style="padding:10px 0"><span class="diya"></span>Reading the list… usually 10–30 seconds</div></div>`;
@@ -1068,6 +1111,7 @@ function viewScan() {
   return `<div class="stack scan-review">
     <div class="card form">
       <div class="page-head"><h2>Check ${SCAN.rows.length} ${t === 'expense' ? 'expense' : 'collection'} rows</h2><span class="year-pill">${S.year}</span></div>
+      ${SCAN.cost != null ? `<p class="muted small" style="margin:0">This scan cost ${usdInr(SCAN.cost)}${SCAN.est ? ` · estimate was ${usdInr(SCAN.est.likely)}` : ''}.</p>` : ''}
       <button type="button" class="scan-thumb" id="scPhoto" title="View the photo"><img src="${SCAN.photoUrl}" alt="Your list"><span>Tap to compare with the photo</span></button>
       <div class="row-2">
         <div class="field"><label for="scDate">Date for all rows</label><input class="input" type="date" id="scDate" value="${esc(SCAN.date)}"></div>
@@ -1118,9 +1162,25 @@ function bindScan() {
     if (!file) return;
     try {
       const photo = await photoForAI(file);
-      Object.assign(SCAN, { stage: 'reading', err: '', photo, photoUrl: URL.createObjectURL(photo) });
-      render();
-      const out = await readList(photo, SCAN.type);
+      Object.assign(SCAN, { stage: 'estimate', err: '', est: null, estErr: '', photo, photoUrl: URL.createObjectURL(photo) });
+      SCAN.req = await scanRequest(photo, SCAN.type);
+    } catch (err) {
+      Object.assign(SCAN, { stage: 'pick', err: aiError(err) });
+      return render();
+    }
+    render();
+    checkCost();
+  };
+  const checkCost = async () => {
+    try { SCAN.est = await estimateScan(SCAN.req); SCAN.estErr = ''; }
+    catch (err) { SCAN.estErr = aiError(err); }
+    if (route().path === 'scan' && SCAN.stage === 'estimate') render();
+  };
+  const read = async () => {
+    SCAN.stage = 'reading'; render();
+    try {
+      const { out, cost } = await readList(SCAN.req);
+      SCAN.cost = cost;
       const rows = (out.rows || []).filter(r => r.n || r.a).map(r => ({ ...r, on: true, d: /^\d{4}-\d{2}-\d{2}$/.test(r.d) ? r.d : '' }));
       if (!rows.length) throw new Error('No money lines were found in this photo. Try a clearer or closer photo.');
       Object.assign(SCAN, { stage: 'review', rows, total: out.total || 0, date: todayISO(), by: LS.get('lp-last-handler', ''), mode: LS.get('lp-last-mode', 'Cash') });
@@ -1130,6 +1190,12 @@ function bindScan() {
     if (route().path === 'scan') render();
   };
   ['#scCam', '#scPick'].forEach(sel => { const el = $(sel); if (el) el.addEventListener('change', pick); });
+  if (SCAN.stage === 'estimate') {
+    $('#scBack').onclick = () => { resetScan(); render(); };
+    $('#scGo').onclick = read;
+    const rc = $('#scRecheck');
+    if (rc) rc.onclick = () => { SCAN.estErr = ''; render(); checkCost(); };
+  }
   if (SCAN.stage !== 'review') return;
 
   const box = $('#scRows');

@@ -443,3 +443,7 @@ label.btn { margin: 0; }
 .scan-bar .btn { min-height: 40px; padding: 8px 12px; }
 .scan-bar #scSum { line-height: 1.35; }
 @media (min-width: 900px) { .scan-bar { bottom: 12px; } }
+
+.cost-card { border: 1px solid var(--gold); background: var(--gold-soft); border-radius: 12px; padding: 4px 10px; }
+.cost-card td { border-bottom-color: color-mix(in srgb, var(--gold) 40%, transparent); }
+.cost-card tr:last-child td { border-bottom: 0; }

@@ -51,7 +51,7 @@ Tip: on your phone, open the site and choose *Add to Home screen* to use it like
 Home → **📷 Scan a handwritten list** (or the link at the top of the Add form).
 
 1. Choose what's on the paper: **Expenses / payments** or **Collections received**.
-2. Take or choose a photo. Claude (Anthropic's AI model, Claude Opus 5) reads it. It's given your categories and past item and person names, so the spellings match.
+2. Take or choose a photo. **Before anything is charged**, a free check shows the exact input cost, an estimate for Claude's reply (learned from your past scans), the expected total, and the maximum possible cost (the reply length is capped at 5,000 tokens). Tap **Read the list** to continue, or **Cancel**. Claude (Anthropic's AI model, Claude Opus 5) then reads it. It's given your categories and past item and person names, so the spellings match.
 3. **Review screen:** each row can be edited or unticked, hard-to-read rows are highlighted, "all rows" fields cover date / paid by / mode, and the rows' sum is checked against any total written on the paper. Nothing is saved until you tap **Add**.
 4. The entries are saved in one go, all sharing the photo as their receipt, and marked "📷 From scanned list". The Ledger has a *📷 From scans* filter.
 
