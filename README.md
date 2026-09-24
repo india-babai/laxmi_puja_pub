@@ -63,9 +63,10 @@ Home → **📷 Scan a handwritten list** (or the link at the top of the Add for
 
 1. Create a **second** fine-grained token (e.g. *puja-viewers*): only `laxmi_puja_private`, **Contents: Read-only**.
 2. On your own device: ⚙ Settings → **Share a view-only link** → paste that token → **Create link** → copy or share it (WhatsApp etc.).
-3. Anyone who opens the link sees Home, Ledger, Report (PDF/Excel/CSV) and History. There's no ＋ button, entries can't be edited, and GitHub itself rejects writes from that token.
+   Choose **Everything (all years)** or **Only the <year> report**. The report-only link opens straight to the live report for that year: no menus, no other years, receipts still viewable. It's good for pinning in a WhatsApp group. The read-only token is remembered on your device so you can make more links later.
+3. Anyone who opens an "Everything" link sees Home, Ledger, Report (PDF/Excel/CSV) and History. There's no ＋ button, entries can't be edited, and GitHub itself rejects writes from that token.
 
-Anyone who has the link can view the accounts, and the link can be forwarded. To cut off access, delete the *puja-viewers* token on GitHub, create a new one, and send a new link.
+Anyone who has the link can view the accounts, and the link can be forwarded. A report-only link only *shows* one year's report, but it carries the same read-only token, so someone technical could still read the other years. To cut off access, delete the *puja-viewers* token on GitHub, create a new one, and send a new link.
 
 ## Local preview
 

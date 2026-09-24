@@ -275,7 +275,11 @@ const latestYear = () => S.years.length ? Math.max(...S.years) : THIS_YEAR;
 
 const RO = () => !!(S.cfg && S.cfg.readonly);
 
-function setYear(y) { S.year = +y; LS.set('lp-year', S.year); }
+/* A "report-only" share link pins viewers to one year's report page. */
+const LOCK = () => (S.cfg && S.cfg.lock) || null;
+const lockYear = () => (LOCK().year || latestYear());
+
+function setYear(y) { if (LOCK()) return; S.year = +y; LS.set('lp-year', S.year); }
 
 async function boot() {
   if (!S.cfg) { S.ready = true; return render(); }
@@ -291,7 +295,7 @@ async function boot() {
 
 function pickYear() {
   const saved = LS.get('lp-year', null);
-  S.year = S.years.includes(saved) ? saved : latestYear();
+  S.year = LOCK() ? lockYear() : S.years.includes(saved) ? saved : latestYear();
 }
 
 async function refreshAll() {
@@ -391,6 +395,11 @@ function render() {
   const app = $('#app');
   const { path, params } = route();
   if (path === 'join') return joinFromLink(params);
+  document.body.classList.toggle('locked', !!LOCK());
+  if (LOCK()) {
+    if (path !== 'report') { location.replace('#/report'); return; }
+    if (S.ready && S.year !== lockYear()) S.year = lockYear();
+  }
   document.body.classList.toggle('readonly', RO());
   if (RO() && (path === 'add' || path === 'scan')) { location.hash = '#/'; return; }
   // New entries always go into the latest (current) year.
@@ -403,7 +412,7 @@ function render() {
 
   const views = { home: viewHome, ledger: viewLedger, add: viewAdd, scan: viewScan, report: viewReport, history: viewHistory };
   const v = views[path] || viewHome;
-  app.innerHTML = (S.error ? `<div class="banner err no-print" style="margin-bottom:16px">⚠ ${esc(S.error)} <a href="#/settings">Check settings</a> · <a href="javascript:void 0" data-act="retry">Retry</a></div>` : '')
+  app.innerHTML = (S.error ? `<div class="banner err no-print" style="margin-bottom:16px">⚠ ${esc(S.error)} ${LOCK() ? '' : '<a href="#/settings">Check settings</a> · '}<a href="javascript:void 0" data-act="retry">Retry</a></div>` : '')
     + (S.cfg.mode === 'demo' ? '<div class="banner no-print" style="margin-bottom:16px">Demo mode — entries are saved only in this browser. <a href="#/settings">Connect GitHub</a> to sync across devices.</div>' : '')
     + v(params);
   bind(path, params);
@@ -762,16 +771,16 @@ function groupTable(entries, type) {
   if (!groups.length) return '<p class="muted">None recorded.</p>';
   const inn = type === 'collection';
   const head = inn
-    ? '<tr><th>Name</th><th>Date</th><th>Mode</th><th>Remarks</th><th class="r">Amount</th></tr>'
-    : '<tr><th>Item</th><th>Date</th><th>Paid by</th><th>Remarks</th><th class="r">Amount</th></tr>';
+    ? '<tr><th>Name</th><th>Remarks</th><th class="r">Amount</th></tr>'
+    : '<tr><th>Item</th><th>Remarks</th><th class="r">Amount</th></tr>';
   const body = groups.map(([cat, tot]) => {
     const rows = entries.filter(e => (e.category || '—') === cat).sort((a, b) => b.amount - a.amount);
-    return `<tr class="grp"><td colspan="5">${esc(cat)}</td></tr>`
-      + rows.map(e => `<tr><td>${esc(e.name)}</td><td class="num">${fmtDate(e.date) || '—'}</td><td>${esc(inn ? e.mode : e.handledBy) || '—'}</td><td class="small">${esc(e.remarks)}${(e.attachments || []).length ? ` <button class="att-link" type="button" data-att="${S.year}|${esc(e.id)}">📎 See bill${e.attachments.length > 1 ? 's' : ''} (${e.attachments.length})</button>` : ''}</td><td class="r num">${money(e.amount)}</td></tr>`).join('')
-      + `<tr class="sub"><td colspan="4">Subtotal · ${esc(cat)}</td><td class="r num">${money(tot)}</td></tr>`;
+    return `<tr class="grp"><td colspan="3">${esc(cat)}</td></tr>`
+      + rows.map(e => `<tr><td class="r-name">${esc(e.name)}<span class="r-meta">${esc([fmtDate(e.date), inn ? e.mode : e.handledBy && 'by ' + e.handledBy].filter(Boolean).join(' · '))}</span></td><td class="small">${esc(e.remarks)}${(e.attachments || []).length ? ` <button class="att-link" type="button" data-att="${S.year}|${esc(e.id)}">📎 See bill${e.attachments.length > 1 ? 's' : ''} (${e.attachments.length})</button>` : ''}</td><td class="r num">${money(e.amount)}</td></tr>`).join('')
+      + `<tr class="sub"><td colspan="2">Subtotal · ${esc(cat)}</td><td class="r num">${money(tot)}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${body}
-    <tr class="pos"><td colspan="4">Total ${inn ? 'collected' : 'spent'}</td><td class="r num ${inn ? 'in' : 'out'}">${money(sum(entries))}</td></tr></tbody></table></div>`;
+    <tr class="pos"><td colspan="2">Total ${inn ? 'collected' : 'spent'}</td><td class="r num ${inn ? 'in' : 'out'}">${money(sum(entries))}</td></tr></tbody></table></div>`;
 }
 function viewReport() {
   const d = yd(), t = totals(d);
@@ -785,13 +794,13 @@ function viewReport() {
         <button class="btn" id="rXlsx">Excel</button>
         <button class="btn" id="rCsv">CSV</button>
       </div></div>
-    <div class="no-print">${yearChips()}</div>
+    <div class="no-print">${LOCK() ? '' : yearChips()}</div>
     <article class="report">
       <header class="report-head">
         <div class="lotus-line"><i></i></div>
         <div class="bn" lang="bn">শ্রী শ্রী লক্ষ্মী পূজা</div>
         <h1>Lakshmi Puja ${S.year} — Statement of Accounts</h1>
-        <div class="muted small">${yearLabel(S.year) ? yearLabel(S.year) + ' · ' : ''}Prepared ${fmtDate(todayISO(), true)}</div>
+        <div class="muted small">${yearLabel(S.year) ? yearLabel(S.year) + ' · ' : ''}Prepared ${fmtDate(todayISO(), true)}${d.updatedAt ? ` · data last updated ${new Date(d.updatedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}</div>
       </header>
       <div class="summary-grid">
         <div><span class="lbl">Collected</span><span class="val num in">${money(t.c)}</span></div>
@@ -1302,7 +1311,12 @@ function viewShare() {
       <li>Permissions → Repository → <b>Contents: Read-only</b>. Nothing else.</li>
       <li>Generate, copy, and paste it below. <b>Do not use your own editing token here.</b></li></ol></details>
     <div class="field"><label for="shTok">Read-only token</label>
-      <input class="input" id="shTok" type="password" placeholder="github_pat_…" autocapitalize="off" spellcheck="false"></div>
+      <input class="input" id="shTok" type="password" value="${esc(LS.get('lp-share-token', ''))}" placeholder="github_pat_…" autocapitalize="off" spellcheck="false">
+      <div class="hint">Remembered on this device so you can make more links later.</div></div>
+    <div class="field"><span class="label">What should the link show?</span><div class="chips">
+      <input type="radio" name="shScope" id="shAll" value="all" checked><label for="shAll">Everything (all years)</label>
+      <input type="radio" name="shScope" id="shRep" value="report"><label for="shRep">Only the ${latestYear()} report</label></div>
+      <div class="hint">“Only the report” opens straight to the live ${latestYear()} report with no menus — good for pinning in a WhatsApp group.</div></div>
     <button class="btn btn-gold" type="button" id="shMake">Create link</button>
     <div id="shOut" hidden>
       <div class="field"><label for="shLink">View-only link</label><input class="input" id="shLink" readonly></div>
@@ -1313,14 +1327,15 @@ function viewShare() {
 }
 async function joinFromLink(params) {
   const cfg = { mode: 'github', owner: params.get('o') || '', repo: params.get('r') || '', branch: params.get('b') || '', token: params.get('t') || '', readonly: true };
-  history.replaceState(null, '', location.pathname + '#/'); // keep the token out of the address bar
+  if (params.get('v') === 'report') cfg.lock = { view: 'report', year: +params.get('y') || null };
+  history.replaceState(null, '', location.pathname + (cfg.lock ? '#/report' : '#/')); // keep the token out of the address bar
   if (!cfg.owner || !cfg.repo || !cfg.token) { toast('That link is incomplete', true); return render(); }
   if (S.cfg && !S.cfg.readonly && S.cfg.mode === 'github' && !confirm('This device can currently edit the accounts. Switch it to view-only?')) return render();
   Object.assign(S, { cfg, store: new GitHubStore(cfg), years: [], data: {}, error: '', ready: false });
   LS.set('lp-config', cfg);
   render();
   await refreshAll();
-  if (!S.error) toast('Welcome! You have view-only access 🙏');
+  if (!S.error && !cfg.lock) toast('Welcome! You have view-only access 🙏');
 }
 function viewSettings() {
   if (RO()) return viewSettingsReadonly();
@@ -1380,7 +1395,10 @@ function bindShare() {
     try {
       const ys = await new GitHubStore({ ...S.cfg, token: t }).listYears();
       if (!ys.length) throw new Error('That token cannot see any year files — check its repository access.');
-      const q = new URLSearchParams({ o: S.cfg.owner, r: S.cfg.repo, ...(S.cfg.branch ? { b: S.cfg.branch } : {}), t });
+      LS.set('lp-share-token', t);
+      const onlyReport = $('#shRep').checked;
+      const q = new URLSearchParams({ o: S.cfg.owner, r: S.cfg.repo, ...(S.cfg.branch ? { b: S.cfg.branch } : {}), t, ...(onlyReport ? { v: 'report', y: latestYear() } : {}) });
+      $('label[for=shLink]').textContent = onlyReport ? `Link to the ${latestYear()} report` : 'View-only link (everything)';
       $('#shLink').value = `${location.origin}${location.pathname}#/join?${q}`;
       $('#shOut').hidden = false;
       if (navigator.share) $('#shSend').hidden = false;
@@ -1392,7 +1410,8 @@ function bindShare() {
     try { await navigator.clipboard.writeText(v); toast('Link copied'); }
     catch { $('#shLink').select(); toast('Select and copy the link manually'); }
   };
-  $('#shSend').onclick = () => navigator.share({ title: 'Lakshmi Puja accounts', text: 'Lakshmi Puja accounts (view only)', url: $('#shLink').value }).catch(() => { });
+  $('#shSend').onclick = () => navigator.share({ title: 'Lakshmi Puja accounts', text: $('#shRep').checked ? `Lakshmi Puja ${latestYear()} — accounts report` : 'Lakshmi Puja accounts (view only)', url: $('#shLink').value }).catch(() => { });
+  $$('input[name=shScope]').forEach(r => r.addEventListener('change', () => { $('#shOut').hidden = true; }));
 }
 function bindForget() {
   const fg = $('#cForget');
