@@ -202,7 +202,9 @@ async function prepareFile(file) {
 }
 /* Delete receipt files one after another (parallel commits would conflict). */
 async function deleteFiles(list, why) {
+  const inUse = new Set(allEntries().flatMap(e => (e.attachments || []).map(a => a.path)));
   for (const a of list) {
+    if (inUse.has(a.path)) continue; // e.g. one scanned list photo shared by several entries
     try { await S.store.deleteFile(a.path, a.sha, why); } catch { /* already gone, or no rights: ignore */ }
     blobCache.delete(a.path);
   }
@@ -390,7 +392,7 @@ function render() {
   const { path, params } = route();
   if (path === 'join') return joinFromLink(params);
   document.body.classList.toggle('readonly', RO());
-  if (RO() && path === 'add') { location.hash = '#/'; return; }
+  if (RO() && (path === 'add' || path === 'scan')) { location.hash = '#/'; return; }
   // New entries always go into the latest (current) year.
   if (path === 'add' && !params.get('id') && S.years.length && S.year !== latestYear()) setYear(latestYear());
   $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === path));
@@ -399,7 +401,7 @@ function render() {
   if (!S.ready) { app.innerHTML = '<div class="loading"><span class="diya"></span>Loading…</div>'; return; }
   if (!S.cfg || path === 'settings') { app.innerHTML = viewSettings(); return bindSettings(); }
 
-  const views = { home: viewHome, ledger: viewLedger, add: viewAdd, report: viewReport, history: viewHistory };
+  const views = { home: viewHome, ledger: viewLedger, add: viewAdd, scan: viewScan, report: viewReport, history: viewHistory };
   const v = views[path] || viewHome;
   app.innerHTML = (S.error ? `<div class="banner err no-print" style="margin-bottom:16px">⚠ ${esc(S.error)} <a href="#/settings">Check settings</a> · <a href="javascript:void 0" data-act="retry">Retry</a></div>` : '')
     + (S.cfg.mode === 'demo' ? '<div class="banner no-print" style="margin-bottom:16px">Demo mode — entries are saved only in this browser. <a href="#/settings">Connect GitHub</a> to sync across devices.</div>' : '')
@@ -499,6 +501,7 @@ function viewHome() {
     <div class="quick edit-only">
       <a class="btn btn-lg btn-in" href="#/add?type=collection">＋ Collection</a>
       <a class="btn btn-lg btn-out" href="#/add?type=expense">＋ Expense</a>
+      <a class="btn btn-lg btn-scan" href="#/scan">📷 Scan a handwritten list</a>
     </div>
     ${pendingHtml}
     <div class="grid grid-2">
@@ -534,6 +537,7 @@ function viewAdd(p) {
 
   return `<form class="form card" id="entryForm" autocomplete="off" novalidate>
     <div class="page-head"><h2>${existing ? 'Edit entry' : 'New entry'}</h2><span class="year-pill" title="Saved into this year's accounts">${S.year}</span></div>
+    ${existing ? '' : '<a class="scan-hint" href="#/scan">📷 Have a handwritten list? Scan it instead →</a>'}
     <div class="seg" role="radiogroup" aria-label="Entry type">
       <input type="radio" name="type" id="tIn" value="collection" ${e.type === 'collection' ? 'checked' : ''}><label for="tIn" class="in-l">↓ Collection</label>
       <input type="radio" name="type" id="tOut" value="expense" ${e.type === 'expense' ? 'checked' : ''}><label for="tOut" class="out-l">↑ Expense</label>
@@ -704,7 +708,7 @@ function bindAdd(p) {
 }
 
 /* ---------------- Ledger ---------------- */
-const ledgerState = { type: 'all', q: '', cat: '', att: false };
+const ledgerState = { type: 'all', q: '', cat: '', att: false, scan: false };
 function viewLedger() {
   const d = yd();
   const cats = [...new Set(d.entries.map(e => e.category).filter(Boolean))].sort();
@@ -716,6 +720,7 @@ function viewLedger() {
         <div class="chips" role="group" aria-label="Show">
           ${['all', 'collection', 'expense'].map(t => `<button class="chip ${ledgerState.type === t ? 'on' : ''}" data-ltype="${t}">${{ all: 'All', collection: 'Collections', expense: 'Expenses' }[t]}</button>`).join('')}
           <button class="chip ${ledgerState.att ? 'on' : ''}" data-latt aria-pressed="${ledgerState.att}">📎 With receipts</button>
+          ${yd().entries.some(e => e.source === 'scan') ? `<button class="chip ${ledgerState.scan ? 'on' : ''}" data-lscan aria-pressed="${ledgerState.scan}">📷 From scans</button>` : ''}
         </div>
         <select class="input" id="lCat" style="width:auto"><option value="">All categories</option>${cats.map(c => `<option ${c === ledgerState.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <input class="input grow" id="lQ" type="search" placeholder="Search name, remarks…" value="${esc(ledgerState.q)}">
@@ -729,6 +734,7 @@ function renderLedgerBody() {
   const list = sortEntries(yd().entries.filter(e =>
     (ledgerState.type === 'all' || e.type === ledgerState.type) &&
     (!ledgerState.att || (e.attachments || []).length) &&
+    (!ledgerState.scan || e.source === 'scan') &&
     (!ledgerState.cat || e.category === ledgerState.cat) &&
     (!q || norm([e.name, e.remarks, e.handledBy, e.mode, e.category].join(' ')).includes(q))));
   const c = sum(list.filter(e => e.type === 'collection')), x = sum(list.filter(e => e.type === 'expense'));
@@ -743,6 +749,8 @@ function bindLedger() {
   }));
   const la = $('[data-latt]');
   la.addEventListener('click', () => { ledgerState.att = !ledgerState.att; la.classList.toggle('on', ledgerState.att); la.setAttribute('aria-pressed', ledgerState.att); renderLedgerBody(); });
+  const ls = $('[data-lscan]');
+  if (ls) ls.addEventListener('click', () => { ledgerState.scan = !ledgerState.scan; ls.classList.toggle('on', ledgerState.scan); ls.setAttribute('aria-pressed', ledgerState.scan); renderLedgerBody(); });
   $('#lCat').addEventListener('change', e => { ledgerState.cat = e.target.value; renderLedgerBody(); });
   $('#lQ').addEventListener('input', e => { ledgerState.q = e.target.value; renderLedgerBody(); });
   renderLedgerBody();
@@ -936,6 +944,277 @@ function bindHistory() {
   };
 }
 
+/* ---------------- Scan a handwritten list (Claude reads the photo) ---------------- */
+const AI_MODEL = 'claude-opus-5';
+const AI_USD = { in: 5 / 1e6, out: 25 / 1e6 }; // Claude Opus 5 price per token
+const AI_SDK = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.128.0/+esm';
+const aiKey = () => LS.get('lp-ai-key', '');
+let sdkLoading;
+function loadSdk() {
+  return sdkLoading ||= import(AI_SDK).then(m => m.default || m.Anthropic)
+    .catch(() => { sdkLoading = null; throw new Error('Could not load the AI library — are you online?'); });
+}
+async function aiClient(key = aiKey()) {
+  const Anthropic = await loadSdk();
+  // The key belongs to the accounts keeper and lives only in their browser.
+  return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 1 });
+}
+function aiError(e) {
+  const m = String((e && e.message) || e);
+  if (e && e.status === 401) return 'The Anthropic API key is not valid — check it in Settings.';
+  if (/credit balance/i.test(m)) return 'Your Anthropic credit has run out — top up at console.anthropic.com.';
+  if (e && (e.status === 429 || e.status === 529 || e.status >= 500)) return 'Claude is busy right now — try again in a minute.';
+  return m;
+}
+/* Always send a ~1400px JPEG: sharp enough for handwriting, small enough to keep each scan cheap. */
+async function photoForAI(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch { throw new Error('This photo format cannot be read — please use a JPG or PNG photo.'); }
+  const scale = Math.min(1, 1400 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close && bmp.close();
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.8));
+  return new File([blob], 'handwritten-list.jpg', { type: 'image/jpeg' });
+}
+const SCAN_SYSTEM = `You transcribe photos of handwritten puja account lists (Bengali, English, or Bengali written in English letters; amounts in Indian rupees).
+One row per money line. Skip headings, crossed-out lines and subtotals. Put a grand total written on the paper in "total" (0 if none).
+n: the item (expense list) or the person's name (collection list), in English letters. If it clearly matches a KNOWN name, use that exact spelling.
+a: rupee amount as a number (convert Bengali digits).
+c: best-fitting category.
+d: YYYY-MM-DD only if that line has its own date, else "".
+p: who paid (expenses) or who received the money (collections), only if written on that line, else "".
+ok: false if any part of the line was hard to read or guessed.`;
+function scanSchema(type) {
+  return {
+    type: 'object', additionalProperties: false, required: ['rows', 'total'],
+    properties: {
+      rows: {
+        type: 'array', items: {
+          type: 'object', additionalProperties: false, required: ['n', 'a', 'c', 'd', 'p', 'ok'],
+          properties: { n: { type: 'string' }, a: { type: 'number' }, c: { type: 'string', enum: CATEGORIES[type] }, d: { type: 'string' }, p: { type: 'string' }, ok: { type: 'boolean' } },
+        },
+      },
+      total: { type: 'number' },
+    },
+  };
+}
+async function readList(photo, type) {
+  const client = await aiClient();
+  const known = suggestions(type).filter(n => n.length <= 40).slice(0, 80);
+  const context = `Year ${S.year}. This is a list of ${type === 'expense' ? 'expenses / payments made' : 'collections / money received from people'}.
+KNOWN ${type === 'expense' ? 'items' : 'names'}: ${known.join('; ')}
+KNOWN people: ${handlers().slice(0, 40).join('; ')}`;
+  const res = await client.beta.messages.create({
+    model: AI_MODEL,
+    max_tokens: 8000,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default', // if Claude declines, Anthropic retries on another model automatically
+    output_config: { effort: 'low', format: { type: 'json_schema', schema: scanSchema(type) } },
+    system: SCAN_SYSTEM,
+    messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobToB64(photo) } },
+      { type: 'text', text: context },
+    ] }],
+  });
+  const u = res.usage || {};
+  const cost = (u.input_tokens || 0) * AI_USD.in + (u.output_tokens || 0) * AI_USD.out;
+  const spend = LS.get('lp-ai-spend', { usd: 0, scans: 0 });
+  LS.set('lp-ai-spend', { usd: spend.usd + cost, scans: spend.scans + 1, last: cost });
+  if (res.stop_reason === 'refusal') throw new Error('Claude could not read this photo. Try a clearer photo.');
+  if (res.stop_reason === 'max_tokens') throw new Error('The list is too long for one photo — photograph half the page at a time.');
+  const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  let out;
+  try { out = JSON.parse(text); } catch { throw new Error('Could not understand the reply — please try again.'); }
+  return out;
+}
+const spendLine = () => { const sp = LS.get('lp-ai-spend', { usd: 0, scans: 0 }); return `Used on this device: ~$${sp.usd.toFixed(2)} for ${sp.scans} scan${sp.scans === 1 ? '' : 's'}${sp.last ? ` (last one ~$${sp.last.toFixed(3)})` : ''}.`; };
+
+let SCAN = { stage: 'pick', type: 'expense' };
+function resetScan() {
+  if (SCAN.photoUrl) URL.revokeObjectURL(SCAN.photoUrl);
+  SCAN = { stage: 'pick', type: SCAN.type || 'expense' };
+}
+function viewScan() {
+  if (!aiKey()) return `<div class="card stack"><h2>📷 Scan a handwritten list</h2>
+    <p>Take a photo of a handwritten list of expenses or collections, and Claude (an AI by Anthropic) will turn it into entries for you to check before saving.</p>
+    <p class="muted small">This needs a one-time setup: an Anthropic API key with a small prepaid credit (for example $5). Each scan costs roughly ₹3–6.</p>
+    <a class="btn btn-primary" href="#/settings">Set it up in Settings</a></div>`;
+  const t = SCAN.type;
+  const segs = `<div class="seg" role="radiogroup" aria-label="List type">
+      <input type="radio" name="scanType" id="sOut" value="expense" ${t === 'expense' ? 'checked' : ''} ${SCAN.stage !== 'pick' ? 'disabled' : ''}><label for="sOut" class="out-l">↑ Expenses / payments</label>
+      <input type="radio" name="scanType" id="sIn" value="collection" ${t === 'collection' ? 'checked' : ''} ${SCAN.stage !== 'pick' ? 'disabled' : ''}><label for="sIn" class="in-l">↓ Collections received</label></div>`;
+  if (SCAN.stage === 'pick') return `<div class="card form">
+    <div class="page-head"><h2>📷 Scan a handwritten list</h2><span class="year-pill">${S.year}</span></div>
+    <span class="label">What is on the paper?</span>${segs}
+    <div class="btn-row">
+      <label class="btn btn-primary btn-lg cam-only" for="scCam" style="flex:1">📷 Take photo</label>
+      <label class="btn btn-lg" for="scPick" style="flex:1">🖼 Choose photo</label>
+    </div>
+    <input type="file" id="scCam" accept="image/*" capture="environment" hidden>
+    <input type="file" id="scPick" accept="image/*" hidden>
+    ${SCAN.err ? `<div class="banner err">⚠ ${esc(SCAN.err)}</div>` : ''}
+    <p class="muted small" style="margin:0">Tips: lay the paper flat in good light, fill the frame, one page per photo. Nothing is saved until you check the rows and tap <b>Add</b>.<br>${spendLine()}</p>
+  </div>`;
+  if (SCAN.stage === 'reading') return `<div class="card stack" style="text-align:center">
+    <img class="scan-photo" src="${SCAN.photoUrl}" alt="Your list">
+    <div class="loading" style="padding:10px 0"><span class="diya"></span>Reading the list… usually 10–30 seconds</div></div>`;
+  // review
+  const people = handlers();
+  return `<div class="stack scan-review">
+    <div class="card form">
+      <div class="page-head"><h2>Check ${SCAN.rows.length} ${t === 'expense' ? 'expense' : 'collection'} rows</h2><span class="year-pill">${S.year}</span></div>
+      <button type="button" class="scan-thumb" id="scPhoto" title="View the photo"><img src="${SCAN.photoUrl}" alt="Your list"><span>Tap to compare with the photo</span></button>
+      <div class="row-2">
+        <div class="field"><label for="scDate">Date for all rows</label><input class="input" type="date" id="scDate" value="${esc(SCAN.date)}"></div>
+        <div class="field"><label for="scBy">${t === 'expense' ? 'Paid by' : 'Received by'} (all rows)</label><input class="input" id="scBy" list="scPeople" value="${esc(SCAN.by)}" placeholder="Who"></div>
+      </div>
+      <div class="field"><span class="label">Payment mode (all rows)</span><div class="chips">${MODES.map((m, i) => `<input type="radio" name="scMode" id="scM${i}" value="${m}" ${m === SCAN.mode ? 'checked' : ''}><label for="scM${i}">${m}</label>`).join('')}</div></div>
+      <p class="muted small" style="margin:0">A date or name written on a single line overrides these. <span class="scan-unsure-key">Highlighted</span> rows were hard to read — please check them.</p>
+    </div>
+    <datalist id="scNames">${suggestions(t).map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <datalist id="scPeople">${people.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <div id="scRows" class="scan-rows"></div>
+    <button type="button" class="btn" id="scAddRow">＋ Add a row it missed</button>
+    <div class="scan-bar card">
+      <div id="scSum" class="small"></div>
+      <div class="btn-row"><button type="button" class="btn" id="scCancel">Start over</button><button type="button" class="btn btn-primary" id="scSave" style="flex:1"></button></div>
+    </div>
+  </div>`;
+}
+function scanRowsHtml() {
+  const cats = CATEGORIES[SCAN.type];
+  return SCAN.rows.map((r, i) => `<div class="scan-row ${r.ok ? '' : 'unsure'} ${r.on ? '' : 'off'}" data-i="${i}">
+    <label class="scan-check"><input type="checkbox" data-f="on" ${r.on ? 'checked' : ''} aria-label="Include row ${i + 1}"></label>
+    <div class="scan-fields">
+      <div class="scan-line">
+        <input class="input" data-f="n" list="scNames" value="${esc(r.n)}" placeholder="${SCAN.type === 'expense' ? 'Item' : 'Name'}" aria-label="Name">
+        <input class="input scan-amt" data-f="a" inputmode="decimal" value="${esc(r.a)}" placeholder="₹" aria-label="Amount">
+      </div>
+      <div class="scan-line">
+        <select class="input" data-f="c" aria-label="Category">${[...new Set([...cats, r.c])].map(c => `<option ${c === r.c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+        <input class="input" type="date" data-f="d" value="${esc(r.d)}" aria-label="Own date (optional)" title="Only if this line has its own date">
+        <input class="input" data-f="p" list="scPeople" value="${esc(r.p)}" placeholder="${SCAN.type === 'expense' ? 'Paid by' : 'Received by'}" aria-label="Person (optional)">
+      </div>
+    </div></div>`).join('');
+}
+function updateScanSum() {
+  const on = SCAN.rows.filter(r => r.on);
+  const total = sum(on, r => r.a);
+  const paper = SCAN.total > 0 ? (Math.abs(paperDiff(total)) < 0.5 ? ` · <span class="in">matches paper total ✓</span>` : `<br><span class="out">⚠ Paper total ${money(SCAN.total)} · off by ${money(Math.abs(paperDiff(total)))}</span>`) : '';
+  $('#scSum').innerHTML = `<b>${on.length}</b> selected · <b>${money(total)}</b>${paper}`;
+  $('#scSave').textContent = `Add ${on.length} ${SCAN.type === 'expense' ? 'expense' : 'collection'}${on.length === 1 ? '' : 's'}`;
+  $('#scSave').disabled = !on.length;
+}
+const paperDiff = total => SCAN.total - total;
+function bindScan() {
+  $$('input[name=scanType]').forEach(r => r.addEventListener('change', () => { SCAN.type = r.value; }));
+  const pick = async e => {
+    const file = e.target.files[0]; e.target.value = '';
+    if (!file) return;
+    try {
+      const photo = await photoForAI(file);
+      Object.assign(SCAN, { stage: 'reading', err: '', photo, photoUrl: URL.createObjectURL(photo) });
+      render();
+      const out = await readList(photo, SCAN.type);
+      const rows = (out.rows || []).filter(r => r.n || r.a).map(r => ({ ...r, on: true, d: /^\d{4}-\d{2}-\d{2}$/.test(r.d) ? r.d : '' }));
+      if (!rows.length) throw new Error('No money lines were found in this photo. Try a clearer or closer photo.');
+      Object.assign(SCAN, { stage: 'review', rows, total: out.total || 0, date: todayISO(), by: LS.get('lp-last-handler', ''), mode: LS.get('lp-last-mode', 'Cash') });
+    } catch (err) {
+      Object.assign(SCAN, { stage: 'pick', err: aiError(err) });
+    }
+    if (route().path === 'scan') render();
+  };
+  ['#scCam', '#scPick'].forEach(sel => { const el = $(sel); if (el) el.addEventListener('change', pick); });
+  if (SCAN.stage !== 'review') return;
+
+  const box = $('#scRows');
+  box.innerHTML = scanRowsHtml();
+  updateScanSum();
+  box.addEventListener('input', e => {
+    const f = e.target.dataset.f, row = e.target.closest('[data-i]');
+    if (!f || !row) return;
+    const r = SCAN.rows[+row.dataset.i];
+    if (f === 'on') { r.on = e.target.checked; row.classList.toggle('off', !r.on); }
+    else if (f === 'a') r.a = Number(String(e.target.value).replace(/[,₹\s]/g, '')) || 0;
+    else r[f] = e.target.value;
+    if (f !== 'on') { r.ok = true; row.classList.remove('unsure'); }
+    updateScanSum();
+  });
+  $('#scDate').oninput = e => { SCAN.date = e.target.value; };
+  $('#scBy').oninput = e => { SCAN.by = e.target.value; };
+  $$('input[name=scMode]').forEach(r => r.addEventListener('change', () => { SCAN.mode = r.value; }));
+  $('#scPhoto').onclick = () => openViewer([{ localUrl: SCAN.photoUrl, type: 'image/jpeg', name: 'handwritten-list.jpg' }], 0, 'Handwritten list');
+  $('#scAddRow').onclick = () => { SCAN.rows.push({ n: '', a: 0, c: CATEGORIES[SCAN.type][0], d: '', p: '', ok: true, on: true }); box.innerHTML = scanRowsHtml(); updateScanSum(); $$('[data-f=n]', box).pop().focus(); };
+  $('#scCancel').onclick = () => { if (confirm('Discard this scan?')) { resetScan(); render(); } };
+  $('#scSave').onclick = async () => {
+    const on = SCAN.rows.filter(r => r.on);
+    const bad = on.findIndex(r => !String(r.n).trim() || !(r.a > 0));
+    if (bad >= 0) return toast(`Row ${SCAN.rows.indexOf(on[bad]) + 1} needs a name and an amount (or untick it)`, true);
+    const btn = $('#scSave'); btn.disabled = true; btn.textContent = 'Saving photo…';
+    try {
+      // One copy of the photo, shared by every entry it produced.
+      if (!SCAN.att) {
+        const path = `receipts/${S.year}/scan-${uid()}/handwritten-list.jpg`;
+        const sha = await S.store.putFile(path, await blobToB64(SCAN.photo), 'Scanned handwritten list', 'image/jpeg');
+        SCAN.att = { path, name: 'handwritten-list.jpg', type: 'image/jpeg', size: SCAN.photo.size, sha };
+        blobCache.set(path, Promise.resolve(SCAN.photoUrl));
+      }
+      btn.textContent = 'Saving entries…';
+      const now = new Date().toISOString();
+      const entries = on.map(r => ({
+        id: `${S.year}-${uid()}`, type: SCAN.type, date: r.d || SCAN.date || null, category: r.c,
+        name: String(r.n).trim(), amount: r.a, mode: SCAN.mode || '', handledBy: (r.p || SCAN.by || '').trim(),
+        remarks: '📷 From scanned list', source: 'scan', attachments: [SCAN.att], createdAt: now,
+      }));
+      await mutate(S.year, d => { d.entries.push(...entries); }, `Add ${entries.length} ${SCAN.type}s from a scanned list`);
+      LS.set('lp-last-mode', SCAN.mode); if (SCAN.by) LS.set('lp-last-handler', SCAN.by);
+      toast(`Added ${entries.length} entries · ${money(sum(entries))}`);
+      SCAN.photoUrl = null; // now owned by the receipt cache
+      resetScan();
+      ledgerState.scan = false;
+      location.hash = '#/ledger';
+    } catch (e) {
+      toast(e.message, true);
+      updateScanSum();
+    }
+  };
+}
+function viewAiSettings() {
+  const has = !!aiKey();
+  return `<section class="card form">
+    <div class="card-head" style="margin:0"><h3>📷 Scan handwritten lists (AI)</h3>${has ? '<span class="year-pill">On</span>' : ''}</div>
+    <p class="muted small" style="margin:0">Uses Claude by Anthropic to read a photo of a handwritten list of expenses or collections. You pay Anthropic directly, roughly ₹3–6 per scan. The key stays only in this browser. View-only family links never get it.</p>
+    <details><summary>How to get a key (one time)</summary><ol class="steps small">
+      <li>Go to <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> and sign up.</li>
+      <li><b>Billing</b> → buy credits (for example $5). Optional: set a monthly spend limit under <b>Limits</b>.</li>
+      <li><b>API keys</b> → <b>Create key</b> → copy it (starts with <code>sk-ant-</code>) and paste it below.</li></ol></details>
+    <div class="field"><label for="aiKey">Anthropic API key</label>
+      <input class="input" id="aiKey" type="password" value="${esc(aiKey())}" placeholder="sk-ant-…" autocapitalize="off" spellcheck="false"></div>
+    <div class="btn-row"><button class="btn btn-gold" type="button" id="aiSave">Save &amp; test</button>${has ? '<button class="btn btn-danger" type="button" id="aiDel">Remove key</button>' : ''}</div>
+    <p class="muted small" style="margin:0">${spendLine()} Your exact balance is on the Anthropic console.</p>
+  </section>`;
+}
+function bindAiSettings() {
+  const sv = $('#aiSave');
+  if (!sv) return;
+  sv.onclick = async () => {
+    const k = $('#aiKey').value.trim();
+    if (!k) return toast('Paste the key first', true);
+    sv.disabled = true; sv.textContent = 'Checking…';
+    try {
+      await (await aiClient(k)).models.list(); // free call — just checks the key works
+      LS.set('lp-ai-key', k); toast('Scanning is ready ✓'); render();
+    } catch (e) { toast(aiError(e), true); sv.disabled = false; sv.textContent = 'Save & test'; }
+  };
+  const del = $('#aiDel');
+  if (del) del.onclick = () => { if (confirm('Remove the Anthropic key from this device?')) { LS.del('lp-ai-key'); render(); } };
+}
+
 /* ---------------- Settings ---------------- */
 function viewSettingsReadonly() {
   return `<div class="stack"><div class="page-head"><h1>Settings</h1></div>
@@ -1020,6 +1299,7 @@ function viewSettings() {
     <section class="card"><div class="btn-row">
       <button class="btn" type="button" data-act="retry">Reload data</button>
       <button class="btn btn-danger" type="button" id="cForget">Disconnect this device</button></div></section>` : ''}
+    ${S.cfg ? viewAiSettings() : ''}
     ${c.mode === 'github' ? viewShare() : ''}
   </div>`;
 }
@@ -1063,6 +1343,7 @@ function bindSettings() {
   bindForget();
   if (RO()) return;
   bindShare();
+  bindAiSettings();
   const f = $('#cfgForm');
   f.addEventListener('submit', async ev => {
     ev.preventDefault();
@@ -1117,6 +1398,7 @@ function bind(path, params) {
   else if (path === 'ledger') bindLedger();
   else if (path === 'report') bindReport();
   else if (path === 'history') bindHistory();
+  else if (path === 'scan') bindScan();
 }
 
 boot();

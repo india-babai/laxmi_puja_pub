@@ -420,3 +420,26 @@ label.btn { margin: 0; }
 .vw-nav:hover { background: rgba(255, 255, 255, .2); }
 @media (max-width: 600px) { .vw-nav { position: absolute; bottom: calc(18px + env(safe-area-inset-bottom)); } #vwPrev { left: 16px; } #vwNext { right: 16px; } }
 @media print { .att-btn, #viewer, .att-link { display: none !important; } }
+
+/* ---------- Scan a handwritten list ---------- */
+.quick .btn-scan { grid-column: 1 / -1; background: var(--gold-soft); border-color: var(--gold); color: var(--ink); }
+.quick .btn-scan:hover { background: var(--gold); color: #3a0a0b; }
+.scan-hint { display: inline-block; font-size: .9rem; font-weight: 600; text-decoration: none; }
+.scan-photo { max-width: 100%; max-height: 50vh; border-radius: 12px; border: 1px solid var(--line); }
+.scan-thumb { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px; border: 1px dashed var(--gold); border-radius: 12px; background: var(--surface-2); cursor: zoom-in; text-align: left; font-weight: 600; color: var(--ink); }
+.scan-thumb img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex: none; }
+.scan-unsure-key { background: var(--gold-soft); border-left: 3px solid var(--marigold); padding: 0 6px; border-radius: 4px; }
+.scan-rows { display: grid; gap: 10px; }
+.scan-row { display: flex; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 10px; box-shadow: var(--shadow); }
+.scan-row.unsure { border-left: 4px solid var(--marigold); background: color-mix(in srgb, var(--gold-soft) 45%, var(--surface)); }
+.scan-row.off { opacity: .45; }
+.scan-check { display: grid; place-items: start center; padding-top: 12px; margin: 0; }
+.scan-check input { width: 22px; height: 22px; accent-color: var(--red); }
+.scan-fields { flex: 1; min-width: 0; display: grid; gap: 8px; }
+.scan-line { display: flex; gap: 8px; flex-wrap: wrap; }
+.scan-line > * { flex: 1 1 120px; min-width: 0; min-height: 42px; padding: 8px 10px; }
+.scan-line .scan-amt { flex: 0 0 110px; font-weight: 700; text-align: right; }
+.scan-bar { position: sticky; bottom: calc(80px + env(safe-area-inset-bottom)); z-index: 5; display: grid; gap: 8px; padding: 10px 12px; }
+.scan-bar .btn { min-height: 40px; padding: 8px 12px; }
+.scan-bar #scSum { line-height: 1.35; }
+@media (min-width: 900px) { .scan-bar { bottom: 12px; } }

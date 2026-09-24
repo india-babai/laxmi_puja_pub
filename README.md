@@ -37,6 +37,7 @@ No server, no database, no monthly cost.
 |---|---|
 | **Home** | Balance / shortfall, collected vs spent, category breakdown, *Yet to receive* (people who gave last year but not yet this year; tap one to log it with last year's amount pre-filled), *Money with people* (who holds cash and who is owed) |
 | **＋** | Add a collection or expense. Names and items auto-suggest from past years, and the category fills itself in. |
+| **📷 Scan** | Photo of a handwritten expense or collection list → AI reads it → you check and edit the rows → added in one go (see below) |
 | **Ledger** | Every entry, with filter and search (including *📎 With receipts*). Tap an entry to edit or delete it. Tap 📎 to see its receipts. |
 | **Receipts** | In the entry form, *📎 Add photos / PDF* or *📷 Camera* attaches as many bills as you like. Photos are shrunk to about 200–400 KB before upload and stored in the private repo under `receipts/<year>/`. They open in a full-screen viewer from the ledger and the report (*See bills*), for view-only family links too. |
 | **Report** | Formal statement for any year → *Print / Save PDF*, *Excel* (Summary, Collections, Expenses sheets), *CSV* |
@@ -44,6 +45,19 @@ No server, no database, no monthly cost.
 | **⚙ Settings** | Connection, start a new year, notes for the year (settlements such as "X to get ₹500") |
 
 Tip: on your phone, open the site and choose *Add to Home screen* to use it like an app.
+
+## Scanning a handwritten list (AI)
+
+Home → **📷 Scan a handwritten list** (or the link at the top of the Add form).
+
+1. Choose what's on the paper: **Expenses / payments** or **Collections received**.
+2. Take or choose a photo. Claude (Anthropic's AI model, Claude Opus 5) reads it. It's given your categories and past item and person names, so the spellings match.
+3. **Review screen:** each row can be edited or unticked, hard-to-read rows are highlighted, "all rows" fields cover date / paid by / mode, and the rows' sum is checked against any total written on the paper. Nothing is saved until you tap **Add**.
+4. The entries are saved in one go, all sharing the photo as their receipt, and marked "📷 From scanned list". The Ledger has a *📷 From scans* filter.
+
+**Setup (once, on your own device):** console.anthropic.com → buy credit (for example $5) → create an API key → ⚙ Settings → *Scan handwritten lists* → paste → **Save & test**. The key stays in that browser only. View-only family links never see it.
+
+**Cost:** roughly ₹3–6 per scan. To keep it low, the photo is sent as a ~1400px JPEG, the instructions are short, effort is set to "low", and the reply is a compact list. Settings shows an estimate of what this device has used. The exact balance is on the Anthropic console.
 
 ## Sharing with family (view only)
 
