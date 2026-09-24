@@ -127,7 +127,7 @@ class DemoStore {
     if (!ys) {
       ys = [];
       // When served locally next to the puja-data folder, seed the demo with real history.
-      for (const y of [2021, 2023, 2025, 2026]) {
+      for (const y of [2021, 2023, 2024, 2025, 2026]) {
         try {
           const r = await fetch(`puja-data/years/${y}.json`, { cache: 'no-store' });
           if (r.ok) { LS.set('lp-demo-' + y, await r.json()); ys.push(y); }
