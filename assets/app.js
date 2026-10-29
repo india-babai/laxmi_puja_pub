@@ -717,7 +717,15 @@ function bindAdd(p) {
 }
 
 /* ---------------- Ledger ---------------- */
-const ledgerState = { type: 'all', q: '', cat: '', att: false, scan: false };
+const ledgerState = { type: 'all', q: '', cat: '', att: false, scan: false, sort: 'new' };
+const LEDGER_SORTS = { new: 'Newest first', old: 'Oldest first', high: 'Amount: high → low', low: 'Amount: low → high' };
+function sortLedger(list) {
+  const s = ledgerState.sort, byDate = sortEntries(list);
+  if (s === 'old') return byDate.reverse();
+  if (s === 'high') return byDate.sort((a, b) => b.amount - a.amount);
+  if (s === 'low') return byDate.sort((a, b) => a.amount - b.amount);
+  return byDate;
+}
 function viewLedger() {
   const d = yd();
   const cats = [...new Set(d.entries.map(e => e.category).filter(Boolean))].sort();
@@ -732,6 +740,7 @@ function viewLedger() {
           ${yd().entries.some(e => e.source === 'scan') ? `<button class="chip ${ledgerState.scan ? 'on' : ''}" data-lscan aria-pressed="${ledgerState.scan}">📷 From scans</button>` : ''}
         </div>
         <select class="input" id="lCat" style="width:auto"><option value="">All categories</option>${cats.map(c => `<option ${c === ledgerState.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+        <select class="input" id="lSort" style="width:auto" aria-label="Sort">${Object.entries(LEDGER_SORTS).map(([k, v]) => `<option value="${k}" ${k === ledgerState.sort ? 'selected' : ''}>${v}</option>`).join('')}</select>
         <input class="input grow" id="lQ" type="search" placeholder="Search name, remarks…" value="${esc(ledgerState.q)}">
       </div>
       <div id="lBody"></div>
@@ -740,7 +749,7 @@ function viewLedger() {
 }
 function renderLedgerBody() {
   const q = norm(ledgerState.q);
-  const list = sortEntries(yd().entries.filter(e =>
+  const list = sortLedger(yd().entries.filter(e =>
     (ledgerState.type === 'all' || e.type === ledgerState.type) &&
     (!ledgerState.att || (e.attachments || []).length) &&
     (!ledgerState.scan || e.source === 'scan') &&
@@ -761,20 +770,24 @@ function bindLedger() {
   const ls = $('[data-lscan]');
   if (ls) ls.addEventListener('click', () => { ledgerState.scan = !ledgerState.scan; ls.classList.toggle('on', ledgerState.scan); ls.setAttribute('aria-pressed', ledgerState.scan); renderLedgerBody(); });
   $('#lCat').addEventListener('change', e => { ledgerState.cat = e.target.value; renderLedgerBody(); });
+  $('#lSort').addEventListener('change', e => { ledgerState.sort = e.target.value; renderLedgerBody(); });
   $('#lQ').addEventListener('input', e => { ledgerState.q = e.target.value; renderLedgerBody(); });
   renderLedgerBody();
 }
 
 /* ---------------- Report ---------------- */
+const reportState = { sort: 'high' };
+const byAmount = (a, b) => reportState.sort === 'low' ? a.amount - b.amount : b.amount - a.amount;
 function groupTable(entries, type) {
   const groups = byKey(entries, 'category');
+  if (reportState.sort === 'low') groups.reverse();
   if (!groups.length) return '<p class="muted">None recorded.</p>';
   const inn = type === 'collection';
   const head = inn
     ? '<tr><th>Name</th><th>Remarks</th><th class="r">Amount</th></tr>'
     : '<tr><th>Item</th><th>Remarks</th><th class="r">Amount</th></tr>';
   const body = groups.map(([cat, tot]) => {
-    const rows = entries.filter(e => (e.category || '—') === cat).sort((a, b) => b.amount - a.amount);
+    const rows = entries.filter(e => (e.category || '—') === cat).sort(byAmount);
     return `<tr class="grp"><td colspan="3">${esc(cat)}</td></tr>`
       + rows.map(e => `<tr><td class="r-name">${esc(e.name)}<span class="r-meta">${esc([fmtDate(e.date), inn ? e.mode : e.handledBy && 'by ' + e.handledBy].filter(Boolean).join(' · '))}</span></td><td class="small">${esc(e.remarks)}${(e.attachments || []).length ? ` <button class="att-link" type="button" data-att="${S.year}|${esc(e.id)}">📎 See bill${e.attachments.length > 1 ? 's' : ''} (${e.attachments.length})</button>` : ''}</td><td class="r num">${money(e.amount)}</td></tr>`).join('')
       + `<tr class="sub"><td colspan="2">Subtotal · ${esc(cat)}</td><td class="r num">${money(tot)}</td></tr>`;
@@ -795,6 +808,12 @@ function viewReport() {
         <button class="btn" id="rCsv">CSV</button>
       </div></div>
     <div class="no-print">${LOCK() ? '' : yearChips()}</div>
+    <div class="filters no-print">
+      <select class="input" id="rSort" style="width:auto" aria-label="Sort">
+        <option value="high" ${reportState.sort === 'high' ? 'selected' : ''}>Amount: high → low</option>
+        <option value="low" ${reportState.sort === 'low' ? 'selected' : ''}>Amount: low → high</option>
+      </select>
+    </div>
     <article class="report">
       <header class="report-head">
         <div class="lotus-line"><i></i></div>
@@ -867,7 +886,7 @@ async function exportXlsx() {
   const ws0 = X.utils.aoa_to_sheet(summary); ws0['!cols'] = [{ wch: 34 }, { wch: 16 }];
   X.utils.book_append_sheet(wb, ws0, 'Summary');
   const sheet = (list, who) => {
-    const rows = list.slice().sort((a, b) => (a.category || '').localeCompare(b.category || '') || b.amount - a.amount)
+    const rows = list.slice().sort((a, b) => (a.category || '').localeCompare(b.category || '') || byAmount(a, b))
       .map(e => ({ Category: e.category || '', [who === 'Received by' ? 'Name' : 'Item']: e.name, Amount: e.amount, Date: e.date || '', Mode: e.mode || '', [who]: e.handledBy || '', Remarks: e.remarks || '', Receipts: (e.attachments || []).length || '' }));
     const ws = X.utils.json_to_sheet(rows);
     X.utils.sheet_add_aoa(ws, [['Total', '', sum(list)]], { origin: -1 });
@@ -882,6 +901,7 @@ function bindReport() {
   $('#rPrint').onclick = () => window.print();
   $('#rCsv').onclick = exportCsv;
   $('#rXlsx').onclick = exportXlsx;
+  $('#rSort').onchange = e => { reportState.sort = e.target.value; render(); };
 }
 
 /* ---------------- History ---------------- */
